@@ -9,25 +9,25 @@
     b: "{{ bgp[inventory_hostname] }}"
 
   tasks:
-    # 0) 开启全局三层转发（BGP/OSPF 等都需要）
+    # 0) 开启全局三层转发
     - name: Enable global unicast routing
       arista.eos.eos_config:
         lines: [ "ip routing" ]
         save_when: modified
 
-    # 1) 物理以太口切换到三层 + 描述 + 启用（结构化模块）
+    # 1) 以太口切 L3 + 描述 + 启用
     - name: Ensure Ethernet ports are layer3 & enabled (structured)
       loop: "{{ eth_ports }}"
       loop_control: { loop_var: p }
       arista.eos.eos_interfaces:
         config:
           - name: "{{ p.name }}"
-            mode: layer3              # ✅ 用 layer3
+            mode: layer3
             description: "{{ p.desc | default(omit) }}"
             enabled: true
         state: merged
 
-    # 2) 所有接口（含 Loopback）配置 IPv4 地址（结构化模块）
+    # 2) 所有接口（含 Loopback）配置 IPv4
     - name: Configure IPv4 addresses on all ports (structured)
       loop: "{{ ports_all }}"
       loop_control: { loop_var: p }
@@ -38,7 +38,7 @@
               - address: "{{ p.ip }}"
         state: merged
 
-    # 3) （仅 R1）加 Null0 静态，便于 network 匹配
+    # 3) （R1）安装 Null0 路由便于 network 匹配
     - name: (R1 only) Install Null0 routes for aggregates
       when: b.static_nulls is defined
       loop: "{{ b.static_nulls }}"
@@ -53,8 +53,8 @@
         lines: [ "router bgp {{ b.asn }}" ]
         save_when: modified
 
-    # 5) 配置 BGP 邻居（merge：只增改不删）
-    - name: Configure BGP neighbors
+    # 5) 配置 BGP 邻居（合并：只增改不删）
+    - name: Configure BGP neighbors (merge)
       loop: "{{ b.neighbors }}"
       loop_control: { loop_var: nb }
       arista.eos.eos_config:
@@ -74,24 +74,41 @@
         lines: [ "network {{ nw }}" ]
         save_when: modified
 
-    # === 路线A：清理未声明的多余邻居（差集删除）===
-    - name: Get current BGP section
+    # === 路线A：基于 JSON 的邻居清理（不使用正则） ===
+
+    # 7) 取 BGP summary 的 JSON
+    - name: Get BGP summary (JSON)
       arista.eos.eos_command:
-        commands: [ "show running-config section router bgp {{ b.asn }}" ]
-      register: bgp_run
+        commands: [ "show ip bgp summary | json" ]
+      register: bgp_json
 
-    - name: Build neighbor sets (intended vs current)
-      vars:
-        intended: "{{ b.neighbors | map(attribute='ip') | list }}"
-        current: >-
-          {{ (bgp_run.stdout[0] | default(''))
-             | regex_findall('neighbor\\s+([0-9.]+)')
-             | unique | list }}
+    # 8) 规范化 JSON（stdout[0] 可能已是 dict）
+    - name: Normalize BGP JSON to dict
       set_fact:
-        bgp_neighbors_intended: "{{ intended }}"
-        bgp_neighbors_current: "{{ current }}"
-        bgp_neighbors_to_remove: "{{ current | difference(intended) }}"
+        bgp_struct: >-
+          {{ bgp_json.stdout[0] if (bgp_json.stdout[0] is mapping)
+             else (bgp_json.stdout[0] | from_json) }}
 
+    # 9) 解析当前/期望邻居并求差集
+    - name: Build neighbor sets from JSON
+      vars:
+        peers_dict: "{{ bgp_struct.get('vrfs', {}).get('default', {}).get('peers', {}) }}"
+        current_nb_list: "{{ peers_dict.keys() | list }}"
+        intended_nb_list: "{{ b.neighbors | map(attribute='ip') | list }}"
+      set_fact:
+        bgp_neighbors_current: "{{ current_nb_list }}"
+        bgp_neighbors_intended: "{{ intended_nb_list }}"
+        bgp_neighbors_to_remove: "{{ current_nb_list | difference(intended_nb_list) }}"
+
+    # 10) 调试输出（便于核对）
+    - name: Debug neighbor sets (current / intended / to_remove)
+      debug:
+        msg:
+          current:   "{{ bgp_neighbors_current }}"
+          intended:  "{{ bgp_neighbors_intended }}"
+          to_remove: "{{ bgp_neighbors_to_remove }}"
+
+    # 11) 删除未声明的多余邻居（幂等收敛）
     - name: Remove extra neighbors not in vars (idempotent cleanup)
       when: bgp_neighbors_to_remove | length > 0
       loop: "{{ bgp_neighbors_to_remove }}"
@@ -101,8 +118,8 @@
         lines: [ "no neighbor {{ n_ip }}" ]
         save_when: modified
 
-    # === 验证：dry-run 只提示；真部署才断言 ===
-    - name: Show BGP summary
+    # === 验证：dry-run 只提示；部署时断言 ===
+    - name: Show BGP summary (for validation)
       arista.eos.eos_command:
         commands: [ "show ip bgp summary" ]
       register: bgp_sum
@@ -110,7 +127,6 @@
     - name: Compute intended and established counts
       set_fact:
         cnt_intended: "{{ (b.neighbors | length) | int }}"
-        # 统计 'Estab' 出现次数；不同平台/版本更稳
         cnt_estab: "{{ (bgp_sum.stdout[0] | regex_findall('\\bEstab\\b') | length) | int }}"
 
     - name: DRY-RUN note
