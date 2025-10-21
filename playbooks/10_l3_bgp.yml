@@ -1,0 +1,78 @@
+- name: Bring up L3 links and BGP neighbors (EOS) — structured ifaces + config BGP
+  hosts: eos
+  gather_facts: no
+  collections: [arista.eos]
+
+  vars:
+    # 每台设备的接口清单（来自 group_vars/eos.yml）
+    my_ports: "{{ interfaces[inventory_hostname] }}"
+    eth_ports: "{{ my_ports | selectattr('name','search','^Ethernet') | list }}"
+    all_ports: "{{ my_ports }}"   # 包含 Loopback 与 Ethernet
+
+  tasks:
+    # 1) 把所有 Ethernet 物理口切成 routed（L3），并设置描述/启用
+    - name: Ensure Ethernet ports are routed & enabled (structured)
+      loop: "{{ eth_ports }}"
+      loop_control: { loop_var: p }
+      arista.eos.eos_interfaces:
+        config:
+          - name: "{{ p.name }}"
+            mode: layer3
+            description: "{{ p.desc | default(omit) }}"
+            enabled: true
+        state: merged
+
+    # 2) 给所有口（含 Loopback）下 IPv4 地址
+    - name: Configure IPv4 addresses on all ports (structured)
+      loop: "{{ all_ports }}"
+      loop_control: { loop_var: p }
+      arista.eos.eos_l3_interfaces:
+        config:
+          - name: "{{ p.name }}"
+            ipv4:
+              - address: "{{ p.ip }}"
+        state: merged
+
+    # 3) （仅 R1）静态 Null0，便于 network 宣告匹配
+    - name: Install Null0 routes for aggregates (R1 only)
+      when: bgp[inventory_hostname].static_nulls is defined
+      loop: "{{ bgp[inventory_hostname].static_nulls }}"
+      loop_control: { loop_var: n }
+      arista.eos.eos_config:
+        lines:
+          - "ip route {{ n }} Null0"
+        save_when: modified
+
+    # 4) 建 BGP 进程
+    - name: Ensure BGP process exists
+      vars: { b: "{{ bgp[inventory_hostname] }}" }
+      arista.eos.eos_config:
+        lines:
+          - "router bgp {{ b.asn }}"
+        save_when: modified
+
+    # 5) 配邻居（iBGP 按需 next-hop-self）
+    - name: Configure BGP neighbors
+      vars: { b: "{{ bgp[inventory_hostname] }}" }
+      loop: "{{ b.neighbors }}"
+      loop_control: { loop_var: nb }
+      arista.eos.eos_config:
+        parents:
+          - "router bgp {{ b.asn }}"
+        lines:
+          - "neighbor {{ nb.ip }} remote-as {{ nb.remote_as }}"
+          - "{% if nb.nh_self | default(false) %}neighbor {{ nb.ip }} next-hop-self{% endif %}"
+        save_when: modified
+
+    # 6) 宣告前缀
+    - name: Advertise networks
+      vars: { b: "{{ bgp[inventory_hostname] }}" }
+      when: b.networks is defined
+      loop: "{{ b.networks }}"
+      loop_control: { loop_var: nw }
+      arista.eos.eos_config:
+        parents:
+          - "router bgp {{ b.asn }}"
+        lines:
+          - "network {{ nw }}"
+        save_when: modified

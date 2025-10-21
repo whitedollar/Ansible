@@ -1,0 +1,40 @@
+interfaces:
+  R1:
+    - { name: Ethernet1, ip: "10.0.12.1/30", desc: "to R2" }
+    - { name: Ethernet2, ip: "10.0.13.1/30", desc: "to R3" }
+    - { name: Loopback100, ip: "100.100.100.100/32" }
+    - { name: Loopback200, ip: "200.200.200.200/32" }
+
+  R2:
+    - { name: Ethernet1, ip: "10.0.12.2/30", desc: "to R1" }
+    - { name: Ethernet2, ip: "10.0.23.1/30", desc: "to R3 (iBGP)" }
+    - { name: Loopback0,  ip: "10.10.10.10/32" }
+
+  R3:
+    - { name: Ethernet1, ip: "10.0.13.2/30", desc: "to R1" }
+    - { name: Ethernet2, ip: "10.0.23.2/30", desc: "to R2 (iBGP)" }
+    - { name: Loopback0,  ip: "10.20.20.20/32" }
+# ====== BGP 参数（ASN、邻居、宣告网段等）======
+bgp:
+  R1:
+    asn: 65010
+    neighbors:
+      - { ip: "10.0.12.2", remote_as: 65000 }   # eBGP -> R2
+      - { ip: "10.0.13.2", remote_as: 65000 }   # eBGP -> R3（修正为 .2）
+    networks: ["100.100.100.0/24", "200.200.200.0/24"]
+    # 让上述 /24 在 RIB 中可匹配（用于 network 语句）
+    static_nulls: ["100.100.100.0/24", "200.200.200.0/24"]
+
+  R2:
+    asn: 65000
+    neighbors:
+      - { ip: "10.0.12.1", remote_as: 65010 }            # eBGP -> R1
+      - { ip: "10.0.23.2", remote_as: 65000, nh_self: true }  # iBGP -> R3（修正为 .2）
+    networks: ["10.10.10.10/32"]
+
+  R3:
+    asn: 65000
+    neighbors:
+      - { ip: "10.0.13.1", remote_as: 65010 }            # eBGP -> R1（修正对端 .1）
+      - { ip: "10.0.23.1", remote_as: 65000, nh_self: true }  # iBGP -> R2（修正为 .1）
+    networks: ["10.20.20.20/32"]

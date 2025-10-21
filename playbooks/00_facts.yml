@@ -1,0 +1,16 @@
+# playbooks/00_facts.yml
+- name: Gather facts and quick checks
+  hosts: ios
+  gather_facts: no
+  tasks:
+    - name: Gather IOS facts
+      cisco.ios.ios_facts:
+
+    - name: Show hostname (from facts)
+      debug:
+        msg: "Device {{ inventory_hostname }} hostname={{ ansible_net_hostname }}, version={{ ansible_net_version }}"
+
+    - name: Check interface brief
+      cisco.ios.ios_command:
+        commands:
+          - show ip interface brief
