@@ -10,6 +10,8 @@ on:
 jobs:
   dryrun:
     runs-on: self-hosted
+    env:
+      ANSIBLE_VAULT_PASSWORD_FILE: ./.vault_pass.txt
     steps:
       - uses: actions/checkout@v4
 
@@ -20,20 +22,22 @@ jobs:
           ansible-galaxy collection install arista.eos ansible.netcommon
 
       - name: Write vault password
-        env: { VAULT_PASS: ${{ secrets.ANSIBLE_VAULT_PASS }} }
+        env:
+          VAULT_PASS: ${{ secrets.ANSIBLE_VAULT_PASS }}
         run: echo "$VAULT_PASS" > .vault_pass.txt
 
       - name: Inventory graph
         run: ansible-inventory --graph
 
       - name: Dry-run with diff
-        env: { ANSIBLE_VAULT_PASSWORD_FILE: ./.vault_pass.txt }
         run: ansible-playbook playbooks/10_l3_bgp.yml --check --diff
 
   deploy:
     needs: dryrun
     if: github.event_name != 'pull_request'
     runs-on: self-hosted
+    env:
+      ANSIBLE_VAULT_PASSWORD_FILE: ./.vault_pass.txt
     steps:
       - uses: actions/checkout@v4
 
@@ -44,9 +48,9 @@ jobs:
           ansible-galaxy collection install arista.eos ansible.netcommon
 
       - name: Write vault password
-        env: { VAULT_PASS: ${{ secrets.ANSIBLE_VAULT_PASS }} }
+        env:
+          VAULT_PASS: ${{ secrets.ANSIBLE_VAULT_PASS }}
         run: echo "$VAULT_PASS" > .vault_pass.txt
 
       - name: Deploy
-        env: { ANSIBLE_VAULT_PASSWORD_FILE: ./.vault_pass.txt }
         run: ansible-playbook playbooks/10_l3_bgp.yml -vv
